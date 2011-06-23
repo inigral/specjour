@@ -1,7 +1,7 @@
 module Specjour::RSpec::Runner
   def self.run(spec, output)
     reset
-    args = ['--format=Specjour::RSpec::DistributedFormatter', spec]
+    args = ['--format=Specjour::RSpec::LillqFormatter', spec]
     ::RSpec::Core::Runner.run_in_process args, $stderr, output
   end
 
