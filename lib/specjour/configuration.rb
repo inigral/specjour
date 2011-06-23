@@ -2,7 +2,7 @@ module Specjour
   module Configuration
     extend self
 
-    attr_writer :before_fork, :after_fork, :prepare, :before_test
+    attr_writer :before_fork, :after_fork, :prepare, :before_test, :after_tests
 
     # This block is run by each worker the manager forks.
     # The Rails plugin uses this block to clear the databases defined in
@@ -33,6 +33,10 @@ module Specjour
 		def before_test
 			@before_test ||= Proc.new {} 
 		end	
+
+		def after_tests
+			@after_tests ||= Proc.new {}
+		end
 
     def reset
       @before_fork = nil

@@ -81,6 +81,7 @@ module Specjour
       else
         Process.kill('TERM', *worker_pids) rescue Errno::ESRCH
       end
+			Configuration.after_tests.call
     end
 
     def pid

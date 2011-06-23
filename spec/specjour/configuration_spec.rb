@@ -125,4 +125,15 @@ describe Specjour::Configuration do
 			subject.before_test.call.should == :custom_before_test
 		end
 	end
+	
+	describe "#after_tests" do
+		it "defaults to nothing" do
+			subject.after_tests.call.should be_nil
+		end
+
+		it "runts the block" do
+			subject.after_tests = lambda { :custom_after_tests }
+			subject.after_tests.call.should == :custom_after_tests
+		end
+	end
 end
