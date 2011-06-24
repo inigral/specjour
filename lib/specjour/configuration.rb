@@ -39,6 +39,8 @@ module Specjour
 		end
 
     def reset
+			@after_tests = nil
+			@before_test = nil
       @before_fork = nil
       @after_fork = nil
       @prepare = nil
