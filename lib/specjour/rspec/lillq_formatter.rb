@@ -38,7 +38,7 @@ module Specjour::RSpec
     end
 
 		def current_indentation
-			'☃' + super
+			'☃  ' + super
 		end
 
     protected
