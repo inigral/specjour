@@ -2,18 +2,24 @@ module Specjour
   module Configuration
     extend self
 
-    attr_writer :before_fork, :after_fork, :prepare, :before_test, :after_tests
+    attr_writer :before_fork, :after_fork, :after_load, :prepare, :before_test, :after_tests
 
-    # This block is run by each worker the manager forks.
-    # The Rails plugin uses this block to clear the databases defined in
-    # ActiveRecord.
-    # Set your own block if the default doesn't work for you.
+    # This block is run by each worker before they begin running tests.
+    # The default action is to migrate the database, and clear it of any old
+    # data.
     def after_fork
       @after_fork ||= default_after_fork
     end
 
-    # This block is run after before forking. When ActiveRecord is
-    # defined, the default before_block disconnects from the database.
+    # This block is run after the manager loads the app into memory, but before
+    # forking new worker processes. The default action is to disconnect from
+    # the ActiveRecord database.
+    def after_load
+      @after_load ||= default_after_load
+    end
+
+    # This block is run by the manager before forking workers. The default
+    # action is to run bundle install.
     def before_fork
       @before_fork ||= default_before_fork
     end
@@ -26,23 +32,24 @@ module Specjour
       @prepare ||= default_prepare
     end
 
-		# This block is run before singular tests are being run.
-		# This is important for example if there is left over cache data from the 
-		# single worker, like Fixtures that need to be reloaded everytime if using 
-		# transactional fixtures.
-		def before_test
-			@before_test ||= Proc.new {} 
-		end	
+    # This block is run before singular tests are being run.
+    # This is important for example if there is left over cache data from the
+    # single worker, like Fixtures that need to be reloaded everytime if using
+    # transactional fixtures.
+    def before_test
+      @before_test ||= Proc.new {}
+    end
 
-		def after_tests
-			@after_tests ||= Proc.new {}
-		end
+    def after_tests
+      @after_tests ||= Proc.new {}
+    end
 
     def reset
-			@after_tests = nil
-			@before_test = nil
+      @after_tests = nil
+      @before_test = nil
       @before_fork = nil
       @after_fork = nil
+      @after_load = nil
       @prepare = nil
     end
 
@@ -54,7 +61,6 @@ module Specjour
 
     def default_before_fork
       lambda do
-        ActiveRecord::Base.remove_connection if defined?(ActiveRecord::Base)
         bundle_install
       end
     end
@@ -62,6 +68,12 @@ module Specjour
     def default_after_fork
       lambda do
         DbScrub.scrub if rails_with_ar?
+      end
+    end
+
+    def default_after_load
+      lambda do
+        ActiveRecord::Base.remove_connection if rails_with_ar?
       end
     end
 

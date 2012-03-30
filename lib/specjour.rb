@@ -17,10 +17,11 @@ module Specjour
   autoload :Connection, 'specjour/connection'
   autoload :DbScrub, 'specjour/db_scrub'
   autoload :Dispatcher, 'specjour/dispatcher'
+  autoload :Fork, 'specjour/fork'
+  autoload :Loader, 'specjour/loader'
   autoload :Manager, 'specjour/manager'
   autoload :Printer, 'specjour/printer'
   autoload :Protocol, 'specjour/protocol'
-  autoload :QuietFork, 'specjour/quiet_fork'
   autoload :RsyncDaemon, 'specjour/rsync_daemon'
   autoload :SocketHelper, 'specjour/socket_helper'
   autoload :Worker, 'specjour/worker'
@@ -28,17 +29,31 @@ module Specjour
   autoload :Cucumber, 'specjour/cucumber'
   autoload :RSpec, 'specjour/rspec'
 
-  VERSION = "0.4.1"
-  HOOKS_PATH = "./.specjour/hooks.rb"
+  VERSION ||= "0.5.2"
+  HOOKS_PATH ||= "./.specjour/hooks.rb"
+  PROGRAM_NAME ||= $PROGRAM_NAME # keep a reference of the original program name
+
+  GC.copy_on_write_friendly = true if GC.respond_to?(:copy_on_write_friendly=)
+
+  class Error < StandardError; end
 
   def self.interrupted?
     @interrupted
   end
 
   def self.interrupted=(bool)
-    Cucumber.wants_to_quit
-    RSpec.wants_to_quit
     @interrupted = bool
+    if bool
+      will_quit(:RSpec)
+      will_quit(:Cucumber)
+    end
+  end
+
+  def self.will_quit(framework)
+    if Object.const_defined?(framework)
+      framework = Object.const_get(framework)
+      framework.wants_to_quit = true if framework.respond_to?(:wants_to_quit=)
+    end
   end
 
   def self.logger
@@ -62,15 +77,7 @@ module Specjour
   def self.trap_interrupt
     Signal.trap('INT') do
       self.interrupted = true
-      exit 1
+      abort("\n")
     end
   end
-
-  Error = Class.new(StandardError)
-  PROGRAM_NAME = $PROGRAM_NAME # keep a reference of the original program name
-
-  GC.copy_on_write_friendly = true if GC.respond_to?(:copy_on_write_friendly=)
-
-  trap_interrupt
-
 end

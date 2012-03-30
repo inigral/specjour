@@ -1,20 +1,18 @@
 module Specjour
   class Manager
     require 'dnssd'
-    require 'specjour/rspec'
-    require 'specjour/cucumber'
 
     include DRbUndumped
     include SocketHelper
+    include Fork
 
-    attr_accessor :project_name, :preload_spec, :preload_feature, :worker_task, :pid
-    attr_reader :worker_size, :dispatcher_uri, :registered_projects, :worker_pids, :options
+    attr_accessor :test_paths, :project_name, :worker_task, :pid
+    attr_reader :worker_size, :dispatcher_uri, :registered_projects, :loader_pid, :options, :rsync_port
 
     def self.start_quietly(options)
       manager = new options.merge(:quiet => true)
       manager.drb_uri
-      manager.pid = QuietFork.fork { manager.start }
-      sleep 0.2
+      manager.pid = Fork.fork_quietly { manager.start }
       manager
     end
 
@@ -23,8 +21,7 @@ module Specjour
       @worker_size = options[:worker_size]
       @worker_task = options[:worker_task]
       @registered_projects = options[:registered_projects]
-      @worker_pids = []
-      at_exit { kill_worker_processes }
+      @rsync_port = options[:rsync_port]
     end
 
     def available_for?(project_name)
@@ -39,8 +36,10 @@ module Specjour
     def dispatch
       suspend_bonjour do
         sync
-        execute_before_fork
-        dispatch_workers
+        with_clean_env do
+          execute_before_fork
+          dispatch_loader
+        end
       end
     end
 
@@ -57,14 +56,19 @@ module Specjour
       end
     end
 
-    def dispatch_workers
-      worker_pids.clear
-      (1..worker_size).each do |index|
-        worker_pids << fork do
-          exec "specjour work #{worker_options(index)}"
-        end
+    def dispatch_loader
+      @loader_pid = fork do
+        exec_cmd = "load --printer-uri #{dispatcher_uri} --workers #{worker_size} --task #{worker_task} --project-path #{project_path}"
+        exec_cmd << " --test-paths #{test_paths.join(" ")}" if test_paths.any?
+        exec_cmd << " --log" if Specjour.log?
+        exec_cmd << " --quiet" if quiet?
+        load_path = $LOAD_PATH.detect {|l| l =~ %r(specjour[^/]*/lib$)}
+        bin_path = File.expand_path(File.join(load_path, "../bin"))
+        Kernel.exec({"RUBYLIB" => load_path}, "#{bin_path}/specjour #{exec_cmd}")
       end
       Process.waitall
+    ensure
+      kill_loader_process if loader_pid
     end
 
     def in_project(&block)
@@ -73,15 +77,17 @@ module Specjour
 
     def interrupted=(bool)
       Specjour.interrupted = bool
+      kill_loader_process if loader_pid
     end
 
-    def kill_worker_processes
+    def kill_loader_process
       if Specjour.interrupted?
-        Process.kill('INT', *worker_pids) rescue Errno::ESRCH
+        Process.kill('INT', loader_pid) rescue Errno::ESRCH
       else
-        Process.kill('TERM', *worker_pids) rescue Errno::ESRCH
+        Process.kill('TERM', loader_pid) rescue Errno::ESRCH
       end
-			Configuration.after_tests.call
+      Configuration.after_tests.call
+      @loader_pid = nil
     end
 
     def pid
@@ -94,9 +100,8 @@ module Specjour
 
     def start
       drb_start
-      puts "Workers ready: #{worker_size}."
-      puts "Listening for #{registered_projects.join(', ')}"
       bonjour_announce
+      at_exit { stop_bonjour }
       DRb.thread.join
     end
 
@@ -105,16 +110,20 @@ module Specjour
     end
 
     def sync
-      unless cmd "rsync -aL --delete --port=8989 #{dispatcher_uri.host}::#{project_name} #{project_path}"
-        raise Error, "Rsync Failed."
-      end
+      cmd "rsync -aL --delete --ignore-errors --port=#{rsync_port} #{dispatcher_uri.host}::#{project_name} #{project_path}"
+      puts "rsync complete"
     end
 
     protected
 
     def bonjour_announce
+      projects = registered_projects.join(", ")
+      puts "Workers ready: #{worker_size}"
+      puts "Listening for #{projects}"
       unless quiet?
-        bonjour_service.register "specjour_manager_#{object_id}", "_#{drb_uri.scheme}._tcp", nil, drb_uri.port
+        text = DNSSD::TextRecord.new
+        text['version'] = Specjour::VERSION
+        bonjour_service.register "specjour_manager_#{projects}_#{Process.pid}", "_#{drb_uri.scheme}._tcp", domain=nil, drb_uri.port, host=nil, text
       end
     end
 
@@ -135,7 +144,7 @@ module Specjour
     end
 
     def stop_bonjour
-      bonjour_service.stop
+      bonjour_service.stop if bonjour_service && !bonjour_service.stopped?
       @bonjour_service = nil
     end
 
@@ -145,13 +154,18 @@ module Specjour
       bonjour_announce
     end
 
-    def worker_options(index)
-      exec_options = "--project-path #{project_path} --printer-uri #{dispatcher_uri} --number #{index} --task #{worker_task}"
-      exec_options << " --preload-spec #{preload_spec}" if preload_spec
-      exec_options << " --preload-feature #{preload_feature}" if preload_feature
-      exec_options << " --log" if Specjour.log?
-      exec_options << " --quiet" if quiet?
-      exec_options
+    def with_clean_env
+      if defined?(Bundler)
+        Bundler.with_clean_env do
+          if ENV['RUBYOPT']
+            opts = ENV['RUBYOPT'].split(" ").delete_if {|opt| opt =~ /bundler/}
+            ENV['RUBYOPT'] = opts.join(" ")
+          end
+          yield
+        end
+      else
+        yield
+      end
     end
   end
 end
