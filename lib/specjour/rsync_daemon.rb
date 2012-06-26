@@ -5,15 +5,16 @@ module Specjour
 
     # Corresponds to the version of specjour that changed the configuration
     # file.
-    CONFIG_VERSION = "0.3.0.rc8".freeze
+    CONFIG_VERSION = "0.5.0".freeze
     CONFIG_FILE_NAME = "rsyncd.conf"
     PID_FILE_NAME = "rsyncd.pid"
 
-    attr_reader :project_path, :project_name
+    attr_reader :project_path, :project_name, :port
 
-    def initialize(project_path, project_name)
+    def initialize(project_path, project_name, port)
       @project_path = project_path
       @project_name = project_name
+      @port = port
     end
 
     def config_directory
@@ -35,11 +36,12 @@ module Specjour
     end
 
     def start
+      Kernel.at_exit { stop }
       write_config
       Dir.chdir(project_path) do
         Kernel.system *command
+        sleep 0.1
       end
-      Kernel.at_exit { stop }
     end
 
     def stop
@@ -52,7 +54,7 @@ module Specjour
     protected
 
     def command
-      ["rsync", "--daemon", "--config=#{config_file}", "--port=8989"]
+      ["rsync", "--daemon", "--config=#{config_file}", "--port=#{port}"]
     end
 
     def check_config_version
@@ -92,7 +94,7 @@ remove it, and re-run the dispatcher to generate the new config file.
 # $ #{(command | ['--no-detach']).join(' ')}
 #
 # Rsync with the following command:
-# $ rsync -a --port=8989 #{hostname}::#{project_name} /tmp/#{project_name}
+# $ rsync -a --port=#{port} #{hostname}::#{project_name} /tmp/#{project_name}
 #
 use chroot = no
 timeout = 20
@@ -101,7 +103,8 @@ pid file = ./.specjour/#{PID_FILE_NAME}
 
 [#{project_name}]
   path = .
-  exclude = .git* .specjour/rsync* doc tmp/* log
+  include = tmp/cache/
+  exclude = .git* .specjour/rsync* doc/* tmp/* log/*
       CONFIG
     end
   end

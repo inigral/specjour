@@ -1,52 +1,80 @@
 module Specjour
-  require 'specjour/rspec'
-  require 'specjour/cucumber'
 
-  class Printer < GServer
+  class Printer
     include Protocol
     RANDOM_PORT = 0
 
-    def self.start(specs_to_run)
-      new(specs_to_run).start
-    end
+    attr_reader :port, :clients
+    attr_accessor :tests_to_run, :example_size, :examples_complete, :profiler
 
-    attr_accessor :worker_size, :specs_to_run, :completed_workers, :disconnections, :profiler
-
-    def initialize(specs_to_run)
-      super(
-        port = RANDOM_PORT,
-        host = "0.0.0.0",
-        max_connections = 100,
-        stdlog = $stderr,
-        audit = true,
-        debug = true
-      )
-      @completed_workers = 0
-      @disconnections = 0
+    def initialize
+      @host = "0.0.0.0"
+      @server_socket = TCPServer.new(@host, RANDOM_PORT)
+      @port = @server_socket.addr[1]
       @profiler = {}
-      self.specs_to_run = run_order(specs_to_run)
+      @clients = {}
+      @tests_to_run = []
+      @example_size = 0
+      self.examples_complete = 0
     end
 
-    def serve(client)
-      client = Connection.wrap client
-      client.each(TERMINATOR) do |data|
-        process load_object(data), client
+    def start
+      fds = [@server_socket]
+      catch(:stop) do
+        while true
+          reads = select(fds).first
+          reads.each do |socket_being_read|
+            if socket_being_read == @server_socket
+              client_socket = @server_socket.accept
+              fds << client_socket
+              clients[client_socket] = Connection.wrap(client_socket)
+            elsif socket_being_read.eof?
+              socket_being_read.close
+              fds.delete(socket_being_read)
+              clients.delete(socket_being_read)
+              disconnecting
+            else
+              serve(clients[socket_being_read])
+            end
+          end
+        end
       end
-    end
-
-    def ready(client)
-      synchronize do
-        client.print specs_to_run.shift
-        client.flush
-      end
-    end
-
-    def done(client)
-      self.completed_workers += 1
+    ensure
+      stopping
+      fds.each {|c| c.close}
     end
 
     def exit_status
       reporters.all? {|r| r.exit_status == true}
+    end
+
+    protected
+
+    def serve(client)
+      data = load_object(client.gets(TERMINATOR))
+      case data
+      when String
+        $stdout.print data
+        $stdout.flush
+      when Array
+        send data.first, *(data[1..-1].unshift(client))
+      end
+    end
+
+    def ready(client)
+      client.print tests_to_run.shift
+      client.flush
+    end
+
+    def done(client)
+      self.examples_complete += 1
+    end
+
+    def tests=(client, tests)
+      if tests_to_run.empty?
+        self.tests_to_run = run_order(tests)
+        self.example_size = tests_to_run.size
+      end
     end
 
     def rspec_summary=(client, summary)
@@ -62,39 +90,18 @@ module Specjour
       self.profiler[test] = time
     end
 
-    protected
-
-    def disconnecting(client_port)
-      synchronize { self.disconnections += 1 }
-      if disconnections == worker_size
-        shutdown
-        stop unless Specjour.interrupted?
+    def disconnecting
+      if (examples_complete == example_size) || clients.empty?
+        throw(:stop)
       end
     end
 
-    def log(msg)
-      # noop
-    end
-
-    def error(exception)
-      Specjour.logger.debug "#{exception.inspect}\n#{exception.backtrace.join("\n")}"
-    end
-
-    def process(message, client)
-      if message.is_a?(String)
-        $stdout.print message
-        $stdout.flush
-      elsif message.is_a?(Array)
-        send(message.first, client, *message[1..-1])
-      end
-    end
-
-    def run_order(specs_to_run)
+    def run_order(tests)
       if File.exist?('.specjour/performance')
-        ordered_specs = File.readlines('.specjour/performance').map {|l| l.chop.split(':')[1]}
-        (specs_to_run - ordered_specs) | (ordered_specs & specs_to_run)
+        ordered_tests = File.readlines('.specjour/performance').map {|l| l.chop.split(':', 2)[1]}
+        (tests - ordered_tests) | (ordered_tests & tests)
       else
-        specs_to_run
+        tests
       end
     end
 
@@ -120,29 +127,21 @@ module Specjour
 
     def stopping
       summarize_reports
-      warn_if_workers_deserted
       record_performance unless Specjour.interrupted?
+      print_missing_tests if tests_to_run.any?
     end
 
     def summarize_reports
       reporters.each {|r| r.summarize}
     end
 
-    def synchronize(&block)
-      @connectionsMutex.synchronize &block
+    def print_missing_tests
+      puts "*" * 60
+      puts "Oops! The following tests were not run:"
+      puts "*" * 60
+      puts tests_to_run
+      puts "*" * 60
     end
 
-    def warn_if_workers_deserted
-      if disconnections != completed_workers && !Specjour.interrupted?
-        puts
-        puts workers_deserted_message
-      end
-    end
-
-    def workers_deserted_message
-      data = "* ERROR: NOT ALL WORKERS COMPLETED PROPERLY *"
-      filler = "*" * data.size
-      [filler, data, filler].join "\n"
-    end
   end
 end

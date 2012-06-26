@@ -1,6 +1,82 @@
 History
 =======
 
+0.5.6 / 2012-06-22
+---------------------------
+* [fixed] Specjour hang when attempting to resolve a bonjour reply
+* [fixed] Specjour executes loader under current $LOAD\_PATH  
+  Specjour no longer assumes the required gems are available globally. Useful when running specjour under a vendored environment (bundle install --path=vendor).
+
+0.5.5 / 2012-05-31
+---------------------------
+* [fixed] Now compatible with thor 0.15.x
+
+[Full Changelog](https://github.com/sandro/specjour/compare/v0.5.4...v0.5.5)
+
+0.5.4 / 2012-05-29
+---------------------------
+* [fixed] Not running specs without 'spec/' argument
+
+[Full Changelog](https://github.com/sandro/specjour/compare/v0.5.3...v0.5.4)
+
+0.5.3 / 2012-04-12 - yanked
+---------------------------
+* [fixed] Writing to a nil socket; timeout too small (josephlord)
+* [fixed] Eagerly loading Rspec (jgdavey)
+* [fixed] Load path incorrectly matching specjour (jgdavey)
+
+[Full Changelog](https://github.com/sandro/specjour/compare/v0.5.2...v0.5.3)
+
+0.5.2 / 2012-02-21
+---------------------------
+* [fixed] Binary path used by Loader
+* [fixed] Specjour prepare wouldn't wait for managers to complete
+* [fixed] Slower machines adding completed tests back to suite
+
+[Full Changelog](https://github.com/sandro/specjour/compare/v0.5.1...v0.5.2)
+
+0.5.1 / 2012-02-21 - yanked
+---------------------------
+* [fixed] Dispatcher hanging after printing the report
+* [added] More verbosity during startup
+
+[Full Changelog](https://github.com/sandro/specjour/compare/v0.5.0...v0.5.1)
+
+0.5.0 / 2012-02-20
+----------------------
+
+* [changed] Printer uses UNIX select instead of GServer (threads)
+* [changed] Database is always dropped and reloaded using schema.rb or
+  structure.sql
+* [removed] RSpec < 2.8 compatibility
+* [added] Memory utilizing forks. No longer forking and execing means workers
+  start running tests faster.
+* [added] Configuration.after\_load hook; runs after loading the environment
+* [added] Configurable rsync port
+* [added] Specs distributed by example, not file! Means better
+  distribution/fast spec suites.
+* [added] Rails compiled asset directory (tmp/cache) to the rsync inclusion
+  list. Workers won't have to compile assets during integration tests.
+* [fixed] SQL structure files can be used to build the database.
+* [fixed] Long timeout while waiting for bonjour requests. The bonjour code has
+  been rewritten.
+* [fixed] Load specjour in its own environment when running bundle exec specjour
+* [fixed] Forks running their parent's exit handlers.
+* [fixed] Database creation when the app depends on a database upon environment
+  load (something as simple as a scope would cause this dependency). As long as
+  the regular test environment can be loaded, a worker without a database
+  shouldn't raise an exception, instead the db should be created.
+
+[Full Changelog](https://github.com/sandro/specjour/compare/v0.4.1...v0.5.0)
+
+0.4.1 / 2011-06-17
+------------------
+
+l4rk and leshill
+
+* [fixed] Cucumber failure reports not displayed
+
+
 0.4.0 / 2011-03-09
 ------------------
 

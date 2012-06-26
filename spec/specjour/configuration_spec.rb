@@ -23,21 +23,11 @@ module RailsAndActiveRecordDefined
 end
 
 describe Specjour::Configuration do
-  subject do
-    Specjour::Configuration
-  end
 
   before { subject.reset }
 
   describe "#before_fork" do
     context "default proc" do
-      context "ActiveRecord defined" do
-        extend RailsAndActiveRecordDefined
-        it "disconnects from the database" do
-          mock(ActiveRecord::Base).remove_connection
-          subject.before_fork.call
-        end
-      end
 
       context "bundler installed" do
         before do
@@ -95,6 +85,25 @@ describe Specjour::Configuration do
     end
   end
 
+  describe "#after_load" do
+    context "default proc" do
+      context "ActiveRecord defined" do
+        extend RailsAndActiveRecordDefined
+        it "disconnects from the database" do
+          mock(ActiveRecord::Base).remove_connection
+          subject.after_load.call
+        end
+      end
+    end
+
+    context "custom proc" do
+      it "runs block" do
+        subject.after_load = lambda { :custom_before }
+        subject.after_load.call.should == :custom_before
+      end
+    end
+  end
+
   describe "#prepare" do
     it "defaults to nothing" do
       subject.prepare.call.should be_nil
@@ -115,25 +124,36 @@ describe Specjour::Configuration do
     end
   end
 
-	describe "#before_test" do
-		it "defaults to nothing" do
-			subject.before_test.call.should be_nil
-		end
+  describe "#before_test" do
+    it "defaults to nothing" do
+      subject.before_test.call.should be_nil
+    end
 
-		it "runts the block" do
-			subject.before_test = lambda { :custom_before_test }
-			subject.before_test.call.should == :custom_before_test
-		end
-	end
-	
-	describe "#after_tests" do
-		it "defaults to nothing" do
-			subject.after_tests.call.should be_nil
-		end
+    it "runts the block" do
+      subject.before_test = lambda { :custom_before_test }
+      subject.before_test.call.should == :custom_before_test
+    end
+  end
 
-		it "runts the block" do
-			subject.after_tests = lambda { :custom_after_tests }
-			subject.after_tests.call.should == :custom_after_tests
-		end
-	end
+  describe "#after_tests" do
+    it "defaults to nothing" do
+      subject.after_tests.call.should be_nil
+    end
+
+    it "runts the block" do
+      subject.after_tests = lambda { :custom_after_tests }
+      subject.after_tests.call.should == :custom_after_tests
+    end
+  end
+
+  describe "#rsync_options" do
+    it "allows custom rsync_options to be set" do
+      subject.rsync_options = '-a'
+      subject.rsync_options.should == '-a'
+    end
+
+    it "defaults to archive, symbolic links, delete, and ignore errors" do
+      subject.rsync_options.should == "-aL --delete --ignore-errors"
+    end
+  end
 end

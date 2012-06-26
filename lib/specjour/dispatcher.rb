@@ -4,18 +4,19 @@ module Specjour
     Thread.abort_on_exception = true
     include SocketHelper
 
-    attr_reader :project_alias, :managers, :manager_threads, :hosts, :options, :all_tests, :drb_connection_errors
+    attr_reader :project_alias, :managers, :manager_threads, :hosts, :options, :drb_connection_errors, :test_paths, :rsync_port
     attr_accessor :worker_size, :project_path
 
     def initialize(options = {})
       Specjour.load_custom_hooks
       @options = options
-      @project_path = File.expand_path options[:project_path]
+      @project_path = options[:project_path]
+      @test_paths = options[:test_paths]
       @worker_size = 0
       @managers = []
       @drb_connection_errors = Hash.new(0)
-      find_tests
-      clear_manager_threads
+      @rsync_port = options[:rsync_port]
+      @manager_threads = []
     end
 
     def start
@@ -23,29 +24,15 @@ module Specjour
       gather_managers
       rsync_daemon.start
       dispatch_work
-      printer.join if dispatching_tests?
-      wait_on_managers
+      if dispatching_tests?
+        printer.start
+      else
+        wait_on_managers
+      end
       exit printer.exit_status
     end
 
     protected
-
-    def find_tests
-      if project_path.match(/(.+)\/((spec|features)(?:\/\w+)*)$/)
-        self.project_path = $1
-        @all_tests = $3 == 'spec' ? all_specs($2) : all_features($2)
-      else
-        @all_tests = all_specs | all_features
-      end
-    end
-
-    def all_specs(tests_path = 'spec')
-      Dir[File.join(".", tests_path, "**/*_spec.rb")].sort
-    end
-
-    def all_features(tests_path = 'features')
-      Dir[File.join(".", tests_path, "**/*.feature")].sort
-    end
 
     def add_manager(manager)
       set_up_manager(manager)
@@ -53,15 +40,14 @@ module Specjour
       self.worker_size += manager.worker_size
     end
 
-    def command_managers(async = false, &block)
+    def command_managers(&block)
       managers.each do |manager|
         manager_threads << Thread.new(manager, &block)
       end
-      wait_on_managers unless async
     end
 
     def dispatcher_uri
-      @dispatcher_uri ||= URI::Generic.build :scheme => "specjour", :host => hostname, :port => printer.port
+      @dispatcher_uri ||= URI::Generic.build :scheme => "specjour", :host => local_ip, :port => printer.port
     end
 
     def dispatch_work
@@ -69,8 +55,7 @@ module Specjour
       managers.each do |manager|
         puts "#{manager.hostname} (#{manager.worker_size})"
       end
-      printer.worker_size = worker_size
-      command_managers(true) { |m| m.dispatch rescue DRb::DRbConnError }
+      command_managers { |m| m.dispatch rescue DRb::DRbConnError }
     end
 
     def dispatching_tests?
@@ -85,13 +70,14 @@ module Specjour
     rescue DRb::DRbConnError => e
       drb_connection_errors[uri] += 1
       Specjour.logger.debug "#{e.message}: couldn't connect to manager at #{uri}"
-      retry if drb_connection_errors[uri] < 5
+      sleep(0.1) && retry if drb_connection_errors[uri] < 5
     end
 
     def fork_local_manager
       puts "No listeners found on this machine, starting one..."
-      manager_options = {:worker_size => options[:worker_size], :registered_projects => [project_alias]}
+      manager_options = {:worker_size => options[:worker_size], :registered_projects => [project_alias], :rsync_port => rsync_port}
       manager = Manager.start_quietly manager_options
+      Process.detach manager.pid
       fetch_manager(manager.drb_uri)
       at_exit do
         unless Specjour.interrupted?
@@ -101,23 +87,23 @@ module Specjour
     end
 
     def gather_managers
-      puts "Looking for managers..."
+      puts "Looking for listeners..."
       gather_remote_managers
       fork_local_manager if local_manager_needed?
-      abort "No managers found" if managers.size.zero?
+      abort "No listeners found" if managers.size.zero?
     end
 
     def gather_remote_managers
-      browser = DNSSD::Service.new
-      Timeout.timeout(3) do
-        browser.browse '_druby._tcp' do |reply|
-          if reply.flags.add?
-            resolve_reply(reply)
-          end
-          browser.stop unless reply.flags.more_coming?
+      replies = []
+      Timeout.timeout(1) do
+        DNSSD.browse!('_druby._tcp') do |reply|
+          replies << reply if reply.flags.add?
+          break unless reply.flags.more_coming?
         end
+        raise Timeout::Error
       end
-      rescue Timeout::Error
+    rescue Timeout::Error
+      replies.each {|r| resolve_reply(r)}
     end
 
     def local_manager_needed?
@@ -125,11 +111,11 @@ module Specjour
     end
 
     def no_local_managers?
-      managers.none? {|m| m.hostname == hostname}
+      managers.none? {|m| m.local_ip == local_ip}
     end
 
     def printer
-      @printer ||= Printer.start(all_tests)
+      @printer ||= Printer.new
     end
 
     def project_alias
@@ -140,34 +126,35 @@ module Specjour
       @project_name ||= File.basename(project_path)
     end
 
-    def clear_manager_threads
-      @manager_threads = []
-    end
-
     def resolve_reply(reply)
-      DNSSD.resolve!(reply) do |resolved|
-        Specjour.logger.debug "Bonjour discovered #{resolved.target}"
-        resolved_ip = ip_from_hostname(resolved.target)
-        uri = URI::Generic.build :scheme => reply.service_name, :host => resolved_ip, :port => resolved.port
-        fetch_manager(uri)
-        resolved.service.stop if resolved.service.started?
+      Timeout.timeout(1) do
+        DNSSD.resolve!(reply.name, reply.type, reply.domain, flags=0, reply.interface) do |resolved|
+          Specjour.logger.debug "Bonjour discovered #{resolved.target}"
+          if resolved.text_record && resolved.text_record['version'] == Specjour::VERSION
+            resolved_ip = ip_from_hostname(resolved.target)
+            uri = URI::Generic.build :scheme => reply.service_name, :host => resolved_ip, :port => resolved.port
+            fetch_manager(uri)
+          else
+            puts "Found #{resolved.target} but its version doesn't match v#{Specjour::VERSION}. Skipping..."
+          end
+          break unless resolved.flags.more_coming?
+        end
       end
+    rescue Timeout::Error
     end
 
     def rsync_daemon
-      @rsync_daemon ||= RsyncDaemon.new(project_path, project_name)
+      @rsync_daemon ||= RsyncDaemon.new(project_path, project_name, rsync_port)
     end
 
     def set_up_manager(manager)
       manager.project_name = project_name
       manager.dispatcher_uri = dispatcher_uri
-      manager.preload_spec = all_tests.detect {|f| f =~ /_spec\.rb$/}
-      manager.preload_feature = all_tests.detect {|f| f =~ /\.feature$/}
+      manager.test_paths = test_paths
       manager.worker_task = worker_task
       at_exit do
         begin
           manager.interrupted = Specjour.interrupted?
-          manager.kill_worker_processes
         rescue DRb::DRbConnError
         end
       end
@@ -175,7 +162,6 @@ module Specjour
 
     def wait_on_managers
       manager_threads.each {|t| t.join; t.exit}
-      clear_manager_threads
     end
 
     def worker_task
